@@ -9,7 +9,7 @@ const { verifyWebhook, mapWebhookEvent } = require('./github');
 const PORT         = process.env.PORT         || 3000;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'changeme';
 const APP_SLUG     = process.env.GITHUB_APP_SLUG || '';
-const MEMBERS_FILE = path.join(__dirname, 'members.json');
+const MEMBERS_FILE = process.env.MEMBERS_FILE || path.join(__dirname, 'members.json');
 
 // ── 成員名單（記憶體 + JSON 持久化） ─────────────────────────
 // 結構：{ approved: Set<string>, pending: Set<string> }
