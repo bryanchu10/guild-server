@@ -195,13 +195,18 @@ const clients = new Set();
 wss.on('connection', ws => {
   clients.add(ws);
 
-  // 新 viewer 連線時送出完整成員名單
+  // 新 viewer 連線時送出完整成員名單與當前在線人數
   ws.send(JSON.stringify({
     type:    'init',
     members: [...members.approved],
+    viewers: clients.size,
   }));
+  broadcast({ type: 'viewers', count: clients.size });
 
-  ws.on('close', () => clients.delete(ws));
+  ws.on('close', () => {
+    clients.delete(ws);
+    broadcast({ type: 'viewers', count: clients.size });
+  });
   ws.on('error', () => clients.delete(ws));
 });
 
