@@ -36,6 +36,9 @@ loadMembers();
 
 // ── Express ───────────────────────────────────────────────────
 const app = express();
+const cors = require('cors');
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '*';
+app.use(cors({ origin: FRONTEND_ORIGIN }));
 
 // Webhook route 需要 raw body 才能驗簽
 app.use('/webhook/github', express.raw({ type: 'application/json' }));
