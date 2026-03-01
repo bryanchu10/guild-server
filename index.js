@@ -38,7 +38,7 @@ loadMembers();
 const app = express();
 const cors = require('cors');
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '*';
-app.use(cors({ origin: FRONTEND_ORIGIN }));
+app.use(cors({ origin: FRONTEND_ORIGIN, credentials: true }));
 
 // Webhook route 需要 raw body 才能驗簽
 app.use('/webhook/github', express.raw({ type: 'application/json' }));
@@ -72,7 +72,8 @@ app.post('/api/admin/login', (req, res) => {
   sessions.set(token, Date.now() + SESSION_TTL);
   res.cookie('session', token, {
     httpOnly: true,
-    sameSite: 'strict',
+    sameSite: 'none',
+    secure: true,
     maxAge: SESSION_TTL,
   });
   res.json({ ok: true });
