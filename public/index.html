@@ -148,7 +148,7 @@ const PICK = a => a[R(0, a.length - 1)];
 
 const WORLD_W   = 3200;
 const WORLD_H   = 1280;
-const WALL_H    = 720;   // 牆面高度
+const WALL_H    = 260;   // 牆面高度
 const GATE_X    = 1600;  // 大門中心 X
 const GATE_DOOR = 1250;  // 人物站在門口的 Y
 const GATE_OFF  = 1298;  // 畫面外
@@ -182,7 +182,7 @@ class Guild extends Phaser.Scene {
     // ── 攝影機 ──────────────────────────────────────────────────
     const cam = this.cameras.main;
     cam.setBounds(0, 0, WORLD_W, WORLD_H);
-    cam.setScroll(WORLD_W / 2 - 400, 600); // 初始：世界橫向中央，看向地板區
+    cam.setScroll(WORLD_W / 2 - 400, 0); // 初始：世界橫向中央，從牆面頂部開始
 
     this.followTarget = null;
     this.drag         = null;
@@ -353,7 +353,7 @@ class Guild extends Phaser.Scene {
               c.setPosition(GATE_X, GATE_OFF).setAlpha(0);
               this.tweens.add({
                 targets: c, alpha: 1, duration: 300,
-                onComplete: () => this.go(c, R(200, WORLD_W - 200), R(780, WORLD_H - 80), () => {
+                onComplete: () => this.go(c, R(200, WORLD_W - 200), R(290, WORLD_H - 80), () => {
                   this.time.delayedCall(300, () => this._runCharQueue(c));
                 }),
               });
@@ -417,40 +417,43 @@ class Guild extends Phaser.Scene {
     // 牆地交界
     g.fillStyle(0x3d2007); g.fillRect(0, WALL_H - 8, WORLD_W, 8);
 
-    // 窗戶（每 500px 一扇）
+    // 窗戶（每 500px 一扇，配合矮牆）
     for (let wx = 220; wx < WORLD_W - 100; wx += 500) {
-      g.fillStyle(0x3d2007);     g.fillRect(wx - 5, 160, 90, 240);
-      g.fillStyle(0x87ceeb, 0.5); g.fillRect(wx, 165, 80, 235);
-      g.fillStyle(0x3d2007);     g.fillRect(wx + 37, 165, 6, 235); g.fillRect(wx, 280, 80, 5);
+      g.fillStyle(0x3d2007);      g.fillRect(wx - 5, 18, 90, 176);
+      g.fillStyle(0x87ceeb, 0.5); g.fillRect(wx, 23, 80, 171);
+      g.fillStyle(0x3d2007);      g.fillRect(wx + 37, 23, 6, 171); g.fillRect(wx, 108, 80, 5);
       g.fillStyle(0xffffff, 0.04);
-      g.fillTriangle(wx + 40, 400, wx - 20, WALL_H, wx + 100, WALL_H);
+      g.fillTriangle(wx + 40, 194, wx - 20, WALL_H, wx + 100, WALL_H);
     }
 
     // 公告欄（左側）
-    g.fillStyle(0x6b3e1e); g.fillRect(100, 430, 160, 130);
-    g.fillStyle(0xd4b483); g.fillRect(107, 437, 146, 116);
-    [[112,443,66,32],[182,443,58,32],[112,483,132,26]].forEach(([x,y,w,h]) => {
+    g.fillStyle(0x6b3e1e); g.fillRect(100, 80, 150, 140);
+    g.fillStyle(0xd4b483); g.fillRect(107, 87, 136, 126);
+    [[112,92,56,32],[172,92,60,32],[112,132,126,28]].forEach(([x,y,w,h]) => {
       g.fillStyle(0xfff9e6); g.fillRect(x, y, w, h);
     });
-    g.fillStyle(0xcc3333); g.fillCircle(162, 437, 5);
-    this.add.text(162, 430, '公告欄', {
+    g.fillStyle(0xcc3333); g.fillCircle(160, 87, 5);
+    this.add.text(160, 80, '公告欄', {
       fontSize: '12px', fontFamily: 'serif', color: '#c8a050', stroke: '#3d2007', strokeThickness: 2,
     }).setOrigin(0.5, 1);
 
-    // 壁爐（左、中、右各一）
+    // 壁爐（左、中、右各一，配合矮牆高度）
     for (const fx of [600, 1600, 2600]) {
-      g.fillStyle(0x4a2810); g.fillRect(fx - 60, 340, 120, WALL_H - 340);
-      g.fillStyle(0x111111); g.fillRect(fx - 46, 365, 92, WALL_H - 365);
-      g.fillStyle(0x5a3118); g.fillRect(fx - 68, 330, 136, 14);
+      g.fillStyle(0x4a2810); g.fillRect(fx - 55, 90, 110, WALL_H - 90);
+      g.fillStyle(0x111111); g.fillRect(fx - 42, 110, 84, WALL_H - 110);
+      g.fillStyle(0x5a3118); g.fillRect(fx - 63, 82, 126, 12);
       const gl = this.add.graphics().setDepth(1);
-      gl.fillStyle(0xff7700, 0.05); gl.fillCircle(fx, WALL_H, 220);
+      gl.fillStyle(0xff7700, 0.05); gl.fillCircle(fx, WALL_H, 180);
     }
     this.firePositions = [600, 1600, 2600];
     this.fireG = this.add.graphics().setDepth(2);
     this.time.addEvent({ delay: 85, loop: true, callback: this.flicker, callbackScope: this });
 
-    // 桌子（分散地板）
-    for (const [tx, ty] of [[700,950],[1200,1100],[1700,970],[2200,1080],[2700,950]]) {
+    // 桌子（分散在廣大地板上）
+    for (const [tx, ty] of [
+      [500,380],[900,520],[1300,400],[1700,560],[2100,420],[2500,500],[2900,380],
+      [700,800],[1100,950],[1500,820],[1900,900],[2300,780],[2700,880],
+    ]) {
       g.fillStyle(0x6b3e1e);
       g.fillRect(tx - 70, ty + 32, 12, 40); g.fillRect(tx + 58, ty + 32, 12, 40);
       g.fillStyle(0x8b5a2b); g.fillRect(tx - 80, ty, 172, 32);
@@ -458,8 +461,8 @@ class Guild extends Phaser.Scene {
     }
 
     // 大廳標題
-    this.add.text(WORLD_W / 2, 38, '── G U I L D   H A L L ──', {
-      fontSize: '20px', fontFamily: 'Georgia, serif',
+    this.add.text(WORLD_W / 2, 16, '── G U I L D   H A L L ──', {
+      fontSize: '18px', fontFamily: 'Georgia, serif',
       color: '#f5d076', stroke: '#3d2007', strokeThickness: 4,
     }).setOrigin(0.5);
 
@@ -516,7 +519,7 @@ class Guild extends Phaser.Scene {
     this.roster.set(username, c);
     this.tweens.add({
       targets: c, alpha: 1, duration: 300,
-      onComplete: () => this.go(c, R(200, WORLD_W - 200), R(780, WORLD_H - 80), () => this.idle(c)),
+      onComplete: () => this.go(c, R(200, WORLD_W - 200), R(290, WORLD_H - 80), () => this.idle(c)),
     });
     return c;
   }
@@ -525,7 +528,7 @@ class Guild extends Phaser.Scene {
   idle(c) {
     if (c.qRunning) return;
     c.timer?.destroy(); this.tweens.killTweensOf(c);
-    const tx = R(150, WORLD_W - 150), ty = R(750, WORLD_H - 80);
+    const tx = R(150, WORLD_W - 150), ty = R(280, WORLD_H - 80);
     const dist = Phaser.Math.Distance.Between(c.x, c.y, tx, ty);
     this.tweens.add({
       targets: c, x: tx, y: ty, duration: dist * 5.5, ease: 'Linear',
