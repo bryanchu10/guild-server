@@ -12,6 +12,7 @@
       align-items: center; justify-content: center;
       min-height: 100vh; gap: 8px;
       font-family: 'Courier New', monospace;
+      user-select: none;
     }
     h1 { color: #58a6ff; font-size: 16px; letter-spacing: 3px; }
     #status-bar {
@@ -34,6 +35,37 @@
     .push   { color: #f0883e; } .pr     { color: #a371f7; }
     .merge  { color: #3fb950; } .review { color: #58a6ff; }
     .bug    { color: #f85149; }
+
+    /* 遊戲視窗包裝 */
+    #game-wrap {
+      position: relative; width: 800px; height: 480px;
+      cursor: grab;
+    }
+    #game-wrap.following { cursor: default; }
+    #game-wrap:not(.following):active { cursor: grabbing; }
+
+    /* 解除追蹤按鈕 */
+    #unlock-btn {
+      display: none;
+      position: absolute; top: 8px; right: 8px;
+      background: #161b22; border: 1px solid #58a6ff;
+      color: #8b949e; padding: 5px 14px; border-radius: 6px;
+      font-family: monospace; font-size: 11px; cursor: pointer;
+      z-index: 10; align-items: center; gap: 6px;
+    }
+    #unlock-btn:hover { background: #1c2a3a; color: #e6edf3; }
+    #follow-name { color: #f5d076; }
+
+    /* 小地圖 */
+    #minimap {
+      position: absolute; bottom: 8px; right: 8px;
+      border: 1px solid #30363d; border-radius: 4px;
+      z-index: 10; display: block;
+    }
+    #minimap-hint {
+      position: absolute; bottom: 78px; right: 8px;
+      font-size: 9px; color: #444; z-index: 10; letter-spacing: 1px;
+    }
 
     /* 申請加入面板 */
     #join-panel {
@@ -80,7 +112,17 @@
   <button id="join-btn" onclick="toggleJoinPanel()">申請加入</button>
 </div>
 
-<div id="game-container"></div>
+<div id="game-wrap">
+  <div id="game-container"></div>
+
+  <button id="unlock-btn" onclick="window._guild?.unlockCamera()">
+    ✕ 解除追蹤 <span id="follow-name"></span>
+  </button>
+
+  <div id="minimap-hint">MINIMAP</div>
+  <canvas id="minimap" width="160" height="64"></canvas>
+</div>
+
 <div id="log"><span style="color:#444">// 等待成員活動...</span></div>
 
 <!-- 申請加入面板 -->
@@ -94,8 +136,8 @@
   <div id="join-msg"></div>
 </div>
 
-<!-- App 安裝提示（管理員核准後顯示） -->
-<div id="install-banner" id="install-banner">
+<!-- App 安裝提示 -->
+<div id="install-banner">
   請安裝 GitHub App 以讓活動出現在大廳：
   <a id="install-link" href="#" target="_blank">點此安裝</a>
 </div>
@@ -104,11 +146,14 @@
 const R    = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
 const PICK = a => a[R(0, a.length - 1)];
 
-const GATE_X    = 400;  // 大門中心 X
-const GATE_DOOR = 462;  // 人物站在門口的 Y
-const GATE_OFF  = 496;  // 畫面外（進出動畫用）
+const WORLD_W   = 3200;
+const WORLD_H   = 1280;
+const WALL_H    = 720;   // 牆面高度
+const GATE_X    = 1600;  // 大門中心 X
+const GATE_DOOR = 1250;  // 人物站在門口的 Y
+const GATE_OFF  = 1298;  // 畫面外
 
-// ── 顏色調色盤（依 username hash 決定） ──────────────────────
+// ── 顏色調色盤 ────────────────────────────────────────────────
 const PALETTES = [
   { bc: 0xe74c3c, hc: 0xf1948a }, { bc: 0x2980b9, hc: 0x7fb3d3 },
   { bc: 0x27ae60, hc: 0x58d68d }, { bc: 0xe67e22, hc: 0xf0b27a },
@@ -125,45 +170,139 @@ function hashPalette(name) {
 class Guild extends Phaser.Scene {
   constructor() {
     super('G');
-    this.roster = new Map(); // username → container
+    this.roster = new Map();
   }
 
   create() {
     this.drawHall();
-    this.waitMsg = this.add.text(400, 390, '等待成員加入...', {
-      fontSize: '14px', fontFamily: 'monospace', color: '#444444',
+    this.waitMsg = this.add.text(WORLD_W / 2, WORLD_H / 2, '等待成員加入...', {
+      fontSize: '16px', fontFamily: 'monospace', color: '#444444',
     }).setOrigin(0.5).setDepth(30);
+
+    // ── 攝影機 ──────────────────────────────────────────────────
+    const cam = this.cameras.main;
+    cam.setBounds(0, 0, WORLD_W, WORLD_H);
+    cam.setScroll(WORLD_W / 2 - 400, 600); // 初始：世界橫向中央，看向地板區
+
+    this.followTarget = null;
+    this.drag         = null;
+    this.selRing      = this.add.graphics().setDepth(18);
+
+    // 拖曳平移（未追蹤時）
+    this.input.on('pointerdown', (ptr, gameObjects) => {
+      if (gameObjects.length === 0 && !this.followTarget) {
+        this.drag = { x: ptr.x, y: ptr.y, sx: cam.scrollX, sy: cam.scrollY };
+      }
+    });
+    this.input.on('pointermove', (ptr) => {
+      if (!this.drag || this.followTarget) return;
+      cam.setScroll(
+        this.drag.sx - (ptr.x - this.drag.x) / cam.zoom,
+        this.drag.sy - (ptr.y - this.drag.y) / cam.zoom,
+      );
+    });
+    this.input.on('pointerup', () => { this.drag = null; });
+
+    // 滾輪縮放
+    this.input.on('wheel', (ptr, objs, dx, dy) => {
+      cam.setZoom(Phaser.Math.Clamp(cam.zoom - dy * 0.001, 0.25, 2));
+    });
+
     window._guild = this;
-    // WebSocket 比 Phaser 快，處理已暫存的 init
     if (pendingInit) {
       pendingInit.members.forEach(u => this.addMember(u));
       pendingInit = null;
     }
   }
 
-  // ── 由 WebSocket 呼叫 ────────────────────────────────────────
+  update(time) {
+    // 選取光環脈衝動畫
+    if (this.followTarget) {
+      const c     = this.followTarget;
+      const pulse = 0.4 + 0.6 * Math.abs(Math.sin(time * 0.003));
+      this.selRing.clear();
+      this.selRing.lineStyle(2.5, 0x58a6ff, pulse);
+      this.selRing.strokeCircle(c.x, c.y - 10, 26);
+    }
+    this.updateMinimap();
+  }
+
+  // ── 攝影機追蹤 ────────────────────────────────────────────────
+  followChar(c) {
+    if (this.followTarget === c) { this.unlockCamera(); return; }
+    this.followTarget = c;
+    this.cameras.main.startFollow(c, true, 0.08, 0.08);
+    const btn = document.getElementById('unlock-btn');
+    btn.style.display = 'flex';
+    document.getElementById('follow-name').textContent = c.username;
+    document.getElementById('game-wrap').classList.add('following');
+  }
+
+  unlockCamera() {
+    this.followTarget = null;
+    this.cameras.main.stopFollow();
+    this.selRing.clear();
+    document.getElementById('unlock-btn').style.display = 'none';
+    document.getElementById('game-wrap').classList.remove('following');
+  }
+
+  // ── 小地圖 ───────────────────────────────────────────────────
+  updateMinimap() {
+    const canvas = document.getElementById('minimap');
+    const ctx    = canvas.getContext('2d');
+    const mw = canvas.width, mh = canvas.height;
+    const cam = this.cameras.main;
+
+    ctx.fillStyle = '#0d1117';
+    ctx.fillRect(0, 0, mw, mh);
+
+    // 世界底圖（簡單色塊）
+    const sx = mw / WORLD_W, sy = mh / WORLD_H;
+    ctx.fillStyle = '#2a1a0a';
+    ctx.fillRect(0, 0, mw, Math.round(WALL_H * sy));
+    ctx.fillStyle = '#3a2a0a';
+    ctx.fillRect(0, Math.round(WALL_H * sy), mw, mh - Math.round(WALL_H * sy));
+
+    // 視窗範圍
+    const vx = cam.scrollX * sx;
+    const vy = cam.scrollY * sy;
+    const vw = (cam.width  / cam.zoom) * sx;
+    const vh = (cam.height / cam.zoom) * sy;
+    ctx.fillStyle = 'rgba(88,166,255,0.15)';
+    ctx.fillRect(vx, vy, vw, vh);
+    ctx.strokeStyle = '#58a6ff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(Math.round(vx) + 0.5, Math.round(vy) + 0.5, Math.round(vw), Math.round(vh));
+
+    // 追蹤目標的點
+    if (this.followTarget) {
+      ctx.fillStyle = '#f5d076';
+      ctx.beginPath();
+      ctx.arc(this.followTarget.x * sx, this.followTarget.y * sy, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ── 成員管理 ─────────────────────────────────────────────────
   addMember(username) {
     if (this.roster.has(username)) return;
     if (this.waitMsg) { this.waitMsg.destroy(); this.waitMsg = null; }
-    this._spawnChar(username); // idle 在淡入完成後自動啟動
+    this._spawnChar(username);
   }
 
   removeMember(username) {
     const c = this.roster.get(username);
     if (!c) return;
+    if (this.followTarget === c) this.unlockCamera();
     this.roster.delete(username);
     c.timer?.destroy();
     this.tweens.killTweensOf(c);
-    this.tweens.add({
-      targets: c, alpha: 0, duration: 400,
-      onComplete: () => c.destroy(),
-    });
+    this.tweens.add({ targets: c, alpha: 0, duration: 400, onComplete: () => c.destroy() });
   }
 
   pushServerEvent({ actor, anonymous, action }) {
     if (!action) return;
     if (anonymous) {
-      // 非公會成員對成員的 repo 操作 → 匿名訪客
       const target = this.roster.get(action.targetActor);
       if (target) this._spawnAnonymous(actor, action);
       return;
@@ -179,7 +318,6 @@ class Guild extends Phaser.Scene {
   _runCharQueue(c) {
     if (!c.evQueue.length) { c.qRunning = false; this.idle(c); return; }
     c.qRunning = true;
-    // 等角色完全入場（淡入未完成時稍後重試）
     if (c.alpha < 1) { this.time.delayedCall(200, () => this._runCharQueue(c)); return; }
 
     const action = c.evQueue.shift();
@@ -189,7 +327,7 @@ class Guild extends Phaser.Scene {
     const next = () => this.time.delayedCall(400, () => this._runCharQueue(c));
 
     if (!action.targetActor) {
-      // 1-A 自身事件：原地 popup
+      // 自身事件：原地 popup
       this.popup(c, action.icon + ' ' + action.msg, action.col, () => {
         addLog(action, c.username); next();
       });
@@ -197,7 +335,7 @@ class Guild extends Phaser.Scene {
     } else if (this.roster.has(action.targetActor)) {
       // 目標在公會：走向對方
       const target = this.roster.get(action.targetActor);
-      const tx = target.x + R(-30, 30), ty = target.y + R(-20, 20);
+      const tx = target.x + R(-35, 35), ty = target.y + R(-25, 25);
       this.go(c, tx, ty, () => {
         this.popup(c, action.icon + ' ' + action.msg, action.col, () => {
           addLog(action, c.username); next();
@@ -205,7 +343,7 @@ class Guild extends Phaser.Scene {
       });
 
     } else {
-      // 2-B 外部事件：走到大門 → popup → 離開 → 過一段時間回來
+      // 外部事件：走到大門 → popup → 離開 → 數秒後回來
       this.go(c, GATE_X, GATE_DOOR, () => {
         this.popup(c, action.icon + ' ' + action.msg, action.col, () => {
           addLog(action, c.username);
@@ -215,7 +353,7 @@ class Guild extends Phaser.Scene {
               c.setPosition(GATE_X, GATE_OFF).setAlpha(0);
               this.tweens.add({
                 targets: c, alpha: 1, duration: 300,
-                onComplete: () => this.go(c, R(120, 680), R(310, 435), () => {
+                onComplete: () => this.go(c, R(200, WORLD_W - 200), R(780, WORLD_H - 80), () => {
                   this.time.delayedCall(300, () => this._runCharQueue(c));
                 }),
               });
@@ -226,7 +364,7 @@ class Guild extends Phaser.Scene {
     }
   }
 
-  // ── 匿名訪客（非公會成員） ────────────────────────────────────
+  // ── 匿名訪客 ─────────────────────────────────────────────────
   _spawnAnonymous(actorName, action) {
     const target = this.roster.get(action.targetActor);
     if (!target) return;
@@ -241,7 +379,7 @@ class Guild extends Phaser.Scene {
       fontSize: '9px', fontFamily: 'monospace', color: '#aaa', stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5, 0);
     c.add([g, lbl]); c.gfx = g;
-    const tx = target.x + R(-30, 30), ty = target.y + R(-20, 20);
+    const tx = target.x + R(-35, 35), ty = target.y + R(-25, 25);
     this.tweens.add({
       targets: c, alpha: 1, duration: 300,
       onComplete: () => this.go(c, tx, ty, () => {
@@ -261,80 +399,103 @@ class Guild extends Phaser.Scene {
   // ── 場景繪製 ─────────────────────────────────────────────────
   drawHall() {
     const g = this.add.graphics();
-    g.fillStyle(0x5a3118); g.fillRect(0, 0, 800, 270);
-    g.lineStyle(1, 0x3d2007, 0.45);
-    for (let y = 0; y < 270; y += 36) {
-      const odd = Math.floor(y / 36) % 2;
-      for (let x = odd ? -50 : 0; x < 800; x += 100) g.strokeRect(x, y, 100, 36);
+
+    // 牆面
+    g.fillStyle(0x5a3118); g.fillRect(0, 0, WORLD_W, WALL_H);
+    g.lineStyle(1, 0x3d2007, 0.4);
+    for (let y = 0; y < WALL_H; y += 48) {
+      const odd = Math.floor(y / 48) % 2;
+      for (let x = odd ? -60 : 0; x < WORLD_W; x += 120) g.strokeRect(x, y, 120, 48);
     }
-    g.fillStyle(0x9b7422); g.fillRect(0, 270, 800, 210);
-    g.lineStyle(1, 0x886219, 0.4);
-    for (let y = 285; y < 480; y += 28) g.lineBetween(0, y, 800, y);
-    for (let x = 0; x < 800; x += 55)  g.lineBetween(x, 270, x, 480);
-    g.fillStyle(0x3d2007); g.fillRect(0, 267, 800, 5);
-    [185, 545].forEach(wx => {
-      g.fillStyle(0x3d2007); g.fillRect(wx - 5, 62, 90, 78);
-      g.fillStyle(0x87ceeb, 0.5); g.fillRect(wx, 67, 80, 68);
-      g.fillStyle(0x3d2007); g.fillRect(wx + 37, 67, 6, 68); g.fillRect(wx, 98, 80, 5);
+
+    // 地板
+    g.fillStyle(0x9b7422); g.fillRect(0, WALL_H, WORLD_W, WORLD_H - WALL_H);
+    g.lineStyle(1, 0x886219, 0.35);
+    for (let y = WALL_H + 36; y < WORLD_H; y += 36) g.lineBetween(0, y, WORLD_W, y);
+    for (let x = 0; x < WORLD_W; x += 70)            g.lineBetween(x, WALL_H, x, WORLD_H);
+
+    // 牆地交界
+    g.fillStyle(0x3d2007); g.fillRect(0, WALL_H - 8, WORLD_W, 8);
+
+    // 窗戶（每 500px 一扇）
+    for (let wx = 220; wx < WORLD_W - 100; wx += 500) {
+      g.fillStyle(0x3d2007);     g.fillRect(wx - 5, 160, 90, 240);
+      g.fillStyle(0x87ceeb, 0.5); g.fillRect(wx, 165, 80, 235);
+      g.fillStyle(0x3d2007);     g.fillRect(wx + 37, 165, 6, 235); g.fillRect(wx, 280, 80, 5);
       g.fillStyle(0xffffff, 0.04);
-      g.fillTriangle(wx + 40, 135, wx - 15, 272, wx + 95, 272);
-    });
-    g.fillStyle(0x6b3e1e); g.fillRect(55, 148, 116, 88);
-    g.fillStyle(0xd4b483); g.fillRect(60, 153, 106, 78);
-    [[65,158,46,22],[117,158,41,22],[65,186,93,18]].forEach(([x,y,w,h]) => {
+      g.fillTriangle(wx + 40, 400, wx - 20, WALL_H, wx + 100, WALL_H);
+    }
+
+    // 公告欄（左側）
+    g.fillStyle(0x6b3e1e); g.fillRect(100, 430, 160, 130);
+    g.fillStyle(0xd4b483); g.fillRect(107, 437, 146, 116);
+    [[112,443,66,32],[182,443,58,32],[112,483,132,26]].forEach(([x,y,w,h]) => {
       g.fillStyle(0xfff9e6); g.fillRect(x, y, w, h);
     });
-    g.fillStyle(0xcc3333); g.fillCircle(113, 153, 4);
-    this.add.text(113, 143, '公告欄', { fontSize:'10px', fontFamily:'serif', color:'#c8a050' }).setOrigin(0.5);
-    g.fillStyle(0x4a2810); g.fillRect(685, 118, 98, 152);
-    g.fillStyle(0x111111); g.fillRect(700, 143, 68, 115);
-    g.fillStyle(0x5a3118); g.fillRect(677, 112, 114, 10);
-    const gl = this.add.graphics().setDepth(1);
-    gl.fillStyle(0xff7700, 0.055); gl.fillCircle(734, 270, 165);
+    g.fillStyle(0xcc3333); g.fillCircle(162, 437, 5);
+    this.add.text(162, 430, '公告欄', {
+      fontSize: '12px', fontFamily: 'serif', color: '#c8a050', stroke: '#3d2007', strokeThickness: 2,
+    }).setOrigin(0.5, 1);
+
+    // 壁爐（左、中、右各一）
+    for (const fx of [600, 1600, 2600]) {
+      g.fillStyle(0x4a2810); g.fillRect(fx - 60, 340, 120, WALL_H - 340);
+      g.fillStyle(0x111111); g.fillRect(fx - 46, 365, 92, WALL_H - 365);
+      g.fillStyle(0x5a3118); g.fillRect(fx - 68, 330, 136, 14);
+      const gl = this.add.graphics().setDepth(1);
+      gl.fillStyle(0xff7700, 0.05); gl.fillCircle(fx, WALL_H, 220);
+    }
+    this.firePositions = [600, 1600, 2600];
     this.fireG = this.add.graphics().setDepth(2);
     this.time.addEvent({ delay: 85, loop: true, callback: this.flicker, callbackScope: this });
-    [[245, 388], [530, 388]].forEach(([tx, ty]) => {
-      g.fillStyle(0x6b3e1e); g.fillRect(tx-55, ty+20, 9, 28); g.fillRect(tx+46, ty+20, 9, 28);
-      g.fillStyle(0x8b5a2b); g.fillRect(tx - 65, ty, 130, 22);
-      g.lineStyle(1, 0xb8845a, 0.4); g.lineBetween(tx - 60, ty + 4, tx + 60, ty + 4);
-    });
-    this.add.text(400, 26, '── G U I L D   H A L L ──', {
-      fontSize:'14px', fontFamily:'Georgia, serif', color:'#f5d076', stroke:'#3d2007', strokeThickness:3,
+
+    // 桌子（分散地板）
+    for (const [tx, ty] of [[700,950],[1200,1100],[1700,970],[2200,1080],[2700,950]]) {
+      g.fillStyle(0x6b3e1e);
+      g.fillRect(tx - 70, ty + 32, 12, 40); g.fillRect(tx + 58, ty + 32, 12, 40);
+      g.fillStyle(0x8b5a2b); g.fillRect(tx - 80, ty, 172, 32);
+      g.lineStyle(1, 0xb8845a, 0.4); g.lineBetween(tx - 74, ty + 6, tx + 80, ty + 6);
+    }
+
+    // 大廳標題
+    this.add.text(WORLD_W / 2, 38, '── G U I L D   H A L L ──', {
+      fontSize: '20px', fontFamily: 'Georgia, serif',
+      color: '#f5d076', stroke: '#3d2007', strokeThickness: 4,
     }).setOrigin(0.5);
 
-    // ── 大門（底部中央） ─────────────────────────────────────────
-    // 門洞暗色背景（低 depth，人物走到這裡會被門框遮住）
-    g.fillStyle(0x060200); g.fillRect(362, 447, 76, 33);
-    // 門框（高 depth = 在人物前方，製造穿越感）
-    const gf = this.add.graphics().setDepth(12);
-    gf.fillStyle(0x4a2810); gf.fillRect(350, 432, 12, 48); // 左柱
-    gf.fillRect(438, 432, 12, 48);                          // 右柱
-    gf.fillStyle(0x5a3118); gf.fillRect(346, 424, 108, 10); // 過梁
-    gf.fillStyle(0x3d2007, 0.8); gf.fillRect(346, 433, 108, 3); // 梁底陰影
+    // 大門（底部中央）
+    g.fillStyle(0x060200); g.fillRect(GATE_X - 50, 1240, 100, 40);
+    const gf = this.add.graphics().setDepth(20);
+    gf.fillStyle(0x4a2810);
+    gf.fillRect(GATE_X - 63, 1224, 14, 56); // 左柱
+    gf.fillRect(GATE_X + 49, 1224, 14, 56); // 右柱
+    gf.fillStyle(0x5a3118); gf.fillRect(GATE_X - 68, 1216, 136, 12); // 過梁
+    gf.fillStyle(0x3d2007, 0.8); gf.fillRect(GATE_X - 68, 1227, 136, 4);
     gf.lineStyle(1, 0x8b6914, 0.9);
-    gf.strokeRect(350, 424, 100, 56);                        // 金邊框
+    gf.strokeRect(GATE_X - 63, 1216, 126, 64);
     gf.fillStyle(0x8b6914);
-    gf.fillCircle(388, 455, 3); gf.fillCircle(412, 455, 3); // 門把
-    this.add.text(GATE_X, 421, '大門', {
-      fontSize: '10px', fontFamily: 'serif', color: '#f5d076',
-      stroke: '#3d2007', strokeThickness: 3,
-    }).setOrigin(0.5, 1).setDepth(13);
+    gf.fillCircle(GATE_X - 18, 1255, 4); gf.fillCircle(GATE_X + 18, 1255, 4);
+    this.add.text(GATE_X, 1213, '大門', {
+      fontSize: '12px', fontFamily: 'serif', color: '#f5d076', stroke: '#3d2007', strokeThickness: 3,
+    }).setOrigin(0.5, 1).setDepth(21);
   }
 
   flicker() {
-    const g = this.fireG, cx = 734, base = 255, f = () => Math.random();
+    const g = this.fireG, base = WALL_H;
     g.clear();
-    g.fillStyle(0xff2200, 0.70 + f()*.25); g.fillTriangle(cx+(f()-.5)*10, base-80-f()*18, cx-28, base, cx+28, base);
-    g.fillStyle(0xff7700, 0.65 + f()*.20); g.fillTriangle(cx+(f()-.5)*7,  base-55-f()*12, cx-18, base, cx+18, base);
-    g.fillStyle(0xffcc00, 0.50 + f()*.20); g.fillTriangle(cx+(f()-.5)*4,  base-32-f()*8,  cx-10, base, cx+12, base);
+    for (const cx of this.firePositions) {
+      const f = () => Math.random();
+      g.fillStyle(0xff2200, 0.70 + f() * .25); g.fillTriangle(cx + (f() - .5) * 10, base - 90 - f() * 20, cx - 30, base, cx + 30, base);
+      g.fillStyle(0xff7700, 0.65 + f() * .20); g.fillTriangle(cx + (f() - .5) * 7,  base - 62 - f() * 14, cx - 20, base, cx + 20, base);
+      g.fillStyle(0xffcc00, 0.50 + f() * .20); g.fillTriangle(cx + (f() - .5) * 4,  base - 36 - f() * 9,  cx - 11, base, cx + 13, base);
+    }
   }
 
   // ── 角色 ────────────────────────────────────────────────────
   _spawnChar(username) {
     const pal = hashPalette(username);
-    // 從大門位置（畫面外）走進來
-    const c = this.add.container(GATE_X, GATE_OFF).setDepth(5).setAlpha(0);
-    const g = this.add.graphics();
+    const c   = this.add.container(GATE_X, GATE_OFF).setDepth(5).setAlpha(0);
+    const g   = this.add.graphics();
     g.fillStyle(pal.bc, 0.65); g.fillRect(-7, 9, 6, 14); g.fillRect(1, 9, 6, 14);
     g.fillStyle(pal.bc, 1);    g.fillRoundedRect(-11, -12, 22, 22, 3);
     g.fillStyle(pal.hc, 1);    g.fillCircle(0, -22, 13);
@@ -347,11 +508,15 @@ class Guild extends Phaser.Scene {
     }).setOrigin(0.5, 0);
     c.add([g, lbl]);
     c.gfx = g; c.username = username; c.evQueue = []; c.qRunning = false; c.timer = null;
+
+    // 點擊追蹤
+    c.setInteractive(new Phaser.Geom.Rectangle(-15, -38, 30, 52), Phaser.Geom.Rectangle.Contains);
+    c.on('pointerdown', () => { this.drag = null; this.followChar(c); });
+
     this.roster.set(username, c);
-    // 淡入後走到隨機閒置位置
     this.tweens.add({
       targets: c, alpha: 1, duration: 300,
-      onComplete: () => this.go(c, R(120, 680), R(310, 435), () => this.idle(c)),
+      onComplete: () => this.go(c, R(200, WORLD_W - 200), R(780, WORLD_H - 80), () => this.idle(c)),
     });
     return c;
   }
@@ -360,7 +525,7 @@ class Guild extends Phaser.Scene {
   idle(c) {
     if (c.qRunning) return;
     c.timer?.destroy(); this.tweens.killTweensOf(c);
-    const tx = R(75, 720), ty = R(300, 435); // 不閒逛到大門區域
+    const tx = R(150, WORLD_W - 150), ty = R(750, WORLD_H - 80);
     const dist = Phaser.Math.Distance.Between(c.x, c.y, tx, ty);
     this.tweens.add({
       targets: c, x: tx, y: ty, duration: dist * 5.5, ease: 'Linear',
@@ -382,26 +547,30 @@ class Guild extends Phaser.Scene {
   // ── 對話泡泡 ─────────────────────────────────────────────────
   popup(c, text, col, cb) {
     const px = c.x, py = c.y - 55;
-    const tmp = this.add.text(-9999, -9999, text, { fontSize:'11px', fontFamily:'monospace' });
+    const tmp = this.add.text(-9999, -9999, text, { fontSize: '11px', fontFamily: 'monospace' });
     const bw = Math.max(tmp.width + 18, 90), bh = tmp.height + 14; tmp.destroy();
-    const bg = this.add.graphics().setDepth(20);
-    bg.fillStyle(0xffffff, 0.96); bg.fillRoundedRect(px - bw/2, py - bh, bw, bh, 7);
+    const bg = this.add.graphics().setDepth(22);
+    bg.fillStyle(0xffffff, 0.96); bg.fillRoundedRect(px - bw / 2, py - bh, bw, bh, 7);
     bg.fillTriangle(px - 7, py, px + 7, py, px, py + 11);
-    bg.lineStyle(2, col, 1); bg.strokeRoundedRect(px - bw/2, py - bh, bw, bh, 7);
-    const txt = this.add.text(px, py - bh/2, text, {
-      fontSize:'11px', fontFamily:'monospace', color:'#111',
-    }).setOrigin(0.5).setDepth(21);
+    bg.lineStyle(2, col, 1); bg.strokeRoundedRect(px - bw / 2, py - bh, bw, bh, 7);
+    const txt = this.add.text(px, py - bh / 2, text, {
+      fontSize: '11px', fontFamily: 'monospace', color: '#111',
+    }).setOrigin(0.5).setDepth(23);
     for (let i = 0; i < 6; i++) {
-      const sp = this.add.circle(px + R(-5,5), py - bh, R(2,4), col, 0.85).setDepth(19);
-      this.tweens.add({ targets:sp, x:px+R(-45,45), y:py-bh-R(10,55), alpha:0, scale:0,
-                        duration:450+i*70, delay:i*45, onComplete:()=>sp.destroy() });
+      const sp = this.add.circle(px + R(-5, 5), py - bh, R(2, 4), col, 0.85).setDepth(19);
+      this.tweens.add({
+        targets: sp, x: px + R(-45, 45), y: py - bh - R(10, 55), alpha: 0, scale: 0,
+        duration: 450 + i * 70, delay: i * 45, onComplete: () => sp.destroy(),
+      });
     }
     [bg, txt].forEach(o => o.setAlpha(0));
     this.tweens.add({
-      targets:[bg, txt], alpha:1, duration:160,
+      targets: [bg, txt], alpha: 1, duration: 160,
       onComplete: () => this.time.delayedCall(2800, () =>
-        this.tweens.add({ targets:[bg, txt], alpha:0, duration:280,
-          onComplete: () => { bg.destroy(); txt.destroy(); cb?.(); } })
+        this.tweens.add({
+          targets: [bg, txt], alpha: 0, duration: 280,
+          onComplete: () => { bg.destroy(); txt.destroy(); cb?.(); },
+        })
       ),
     });
   }
@@ -438,7 +607,6 @@ async function submitJoin() {
     if (data.ok) {
       msg.style.color = '#3fb950';
       msg.textContent = data.message || '申請已送出！';
-      // 記住 username，管理員核准後顯示安裝提示
       localStorage.setItem('guild_username', username);
     } else {
       msg.style.color = '#f85149';
@@ -451,7 +619,7 @@ async function submitJoin() {
 }
 
 // ── 啟動 Phaser ──────────────────────────────────────────────
-let pendingInit = null; // Phaser 還沒好時暫存 init 訊息
+let pendingInit = null;
 
 new Phaser.Game({
   type: Phaser.AUTO, width: 800, height: 480,
@@ -482,30 +650,25 @@ function connect() {
         if (window._guild) {
           msg.members.forEach(u => window._guild.addMember(u));
         } else {
-          pendingInit = msg; // Phaser 還沒好，先暫存
+          pendingInit = msg;
         }
         break;
-
       case 'event':
         window._guild?.pushServerEvent(msg);
         break;
-
       case 'member_join':
         window._guild?.addMember(msg.username);
-        // 如果是自己被核准了，顯示安裝 App 提示
         if (msg.username === myUsername && appSlug) {
           const banner = document.getElementById('install-banner');
-          const link   = document.getElementById('install-link');
-          link.href    = `https://github.com/apps/${appSlug}/installations/new`;
+          document.getElementById('install-link').href =
+            `https://github.com/apps/${appSlug}/installations/new`;
           banner.style.display = 'block';
           setTimeout(() => banner.style.display = 'none', 15000);
         }
         break;
-
       case 'member_leave':
         window._guild?.removeMember(msg.username);
         break;
-
       case 'member_app_installed':
         document.getElementById('install-banner').style.display = 'none';
         break;
