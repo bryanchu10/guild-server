@@ -20,15 +20,19 @@ function verifyWebhook(rawBody, signature) {
 function rand(a, b) { return Math.floor(Math.random() * (b - a + 1)) + a; }
 
 function mapWebhookEvent(eventType, payload) {
-  const actor = payload.sender?.login;
-  const repo  = payload.repository?.name || '';
+  const actor     = payload.sender?.login;
+  const repo      = payload.repository?.name || '';
+  const repoOwner = payload.repository?.owner?.login || null;
   if (!actor) return null;
+
+  // targetActor：事件的對象（repo 擁有者），自己對自己的 repo 操作則為 null
+  const ownerTarget = repoOwner !== actor ? repoOwner : null;
 
   switch (eventType) {
     case 'push': {
       const n      = payload.commits?.length ?? 1;
       const branch = (payload.ref || '').replace('refs/heads/', '') || 'main';
-      return { actor, css: 'push', icon: '📦', col: 0xf0883e,
+      return { actor, targetActor: ownerTarget, css: 'push', icon: '📦', col: 0xf0883e,
                msg: `pushed ${n} commit${n > 1 ? 's' : ''} to ${repo}/${branch}`,
                tx: rand(75, 170), ty: rand(295, 355) };
     }
@@ -37,15 +41,15 @@ function mapWebhookEvent(eventType, payload) {
       const pr = payload.pull_request;
       const title = (pr?.title || '').substring(0, 22);
       if (payload.action === 'opened')
-        return { actor, css: 'pr', icon: '🔀', col: 0xa371f7,
+        return { actor, targetActor: ownerTarget, css: 'pr', icon: '🔀', col: 0xa371f7,
                  msg: `opened PR #${n} on ${repo}: ${title}`,
                  tx: rand(75, 170), ty: rand(295, 355) };
       if (payload.action === 'closed' && pr?.merged)
-        return { actor, css: 'merge', icon: '✅', col: 0x3fb950,
+        return { actor, targetActor: ownerTarget, css: 'merge', icon: '✅', col: 0x3fb950,
                  msg: `merged PR #${n} on ${repo}`,
                  tx: rand(310, 490), ty: rand(330, 400) };
       if (payload.action === 'closed')
-        return { actor, css: 'pr', icon: '🚫', col: 0xf85149,
+        return { actor, targetActor: ownerTarget, css: 'pr', icon: '🚫', col: 0xf85149,
                  msg: `closed PR #${n} on ${repo}`,
                  tx: rand(75, 170), ty: rand(295, 355) };
       return null;
@@ -54,10 +58,13 @@ function mapWebhookEvent(eventType, payload) {
       if (payload.action !== 'submitted') return null;
       const n       = payload.pull_request?.number;
       const state   = payload.review?.state;
+      const prAuthor = payload.pull_request?.user?.login || null;
       const verdict = state === 'approved'          ? 'LGTM! 👍'
                     : state === 'changes_requested' ? 'needs changes 🔧'
                     :                                 'left a comment 💬';
-      return { actor, css: 'review', icon: '👀', col: 0x58a6ff,
+      // reviewer 走向 PR 作者
+      const reviewTarget = prAuthor !== actor ? prAuthor : ownerTarget;
+      return { actor, targetActor: reviewTarget, css: 'review', icon: '👀', col: 0x58a6ff,
                msg: `PR #${n} on ${repo}: ${verdict}`,
                tx: rand(310, 490), ty: rand(330, 400) };
     }
@@ -65,18 +72,18 @@ function mapWebhookEvent(eventType, payload) {
       const n     = payload.issue?.number;
       const title = (payload.issue?.title || '').substring(0, 22);
       if (payload.action === 'opened')
-        return { actor, css: 'bug', icon: '🐛', col: 0xf85149,
+        return { actor, targetActor: ownerTarget, css: 'bug', icon: '🐛', col: 0xf85149,
                  msg: `opened issue #${n} on ${repo}: ${title}`,
                  tx: rand(75, 170), ty: rand(295, 355) };
       if (payload.action === 'closed')
-        return { actor, css: 'merge', icon: '🔒', col: 0x3fb950,
+        return { actor, targetActor: ownerTarget, css: 'merge', icon: '🔒', col: 0x3fb950,
                  msg: `closed issue #${n} on ${repo}`,
                  tx: rand(310, 490), ty: rand(330, 400) };
       return null;
     }
     case 'issue_comment':
       if (payload.action !== 'created') return null;
-      return { actor, css: 'review', icon: '💬', col: 0x58a6ff,
+      return { actor, targetActor: ownerTarget, css: 'review', icon: '💬', col: 0x58a6ff,
                msg: `commented on ${repo} #${payload.issue?.number}`,
                tx: rand(310, 490), ty: rand(330, 400) };
     case 'create':
@@ -88,12 +95,12 @@ function mapWebhookEvent(eventType, payload) {
                msg: `deleted ${payload.ref_type} ${payload.ref || ''} on ${repo}`,
                tx: rand(75, 170), ty: rand(295, 355) };
     case 'fork':
-      return { actor, css: 'pr', icon: '🍴', col: 0xa371f7,
+      return { actor, targetActor: ownerTarget, css: 'pr', icon: '🍴', col: 0xa371f7,
                msg: `forked ${payload.forkee?.full_name || repo}`,
                tx: rand(310, 490), ty: rand(330, 400) };
     case 'watch':
       if (payload.action !== 'started') return null;
-      return { actor, css: 'review', icon: '⭐', col: 0xf5d076,
+      return { actor, targetActor: ownerTarget, css: 'review', icon: '⭐', col: 0xf5d076,
                msg: `starred ${repo}`,
                tx: rand(310, 490), ty: rand(330, 400) };
     case 'release':

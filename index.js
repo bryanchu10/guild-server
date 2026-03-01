@@ -140,15 +140,19 @@ app.post('/webhook/github', (req, res) => {
     return;
   }
 
-  // 只處理已核准成員的事件
   const actor = payload.sender?.login;
-  if (!actor || !members.approved.has(actor)) return;
+  if (!actor) return;
 
   const action = mapWebhookEvent(eventType, payload);
   if (!action) return;
 
+  // 事件雙方至少有一人是公會成員才處理
+  const actorApproved  = members.approved.has(actor);
+  const targetApproved = action.targetActor && members.approved.has(action.targetActor);
+  if (!actorApproved && !targetApproved) return;
+
   console.log(`[event] ${actor}: ${action.msg}`);
-  broadcast({ type: 'event', actor, action });
+  broadcast({ type: 'event', actor, anonymous: !actorApproved, action });
 });
 
 // ── WebSocket ─────────────────────────────────────────────────

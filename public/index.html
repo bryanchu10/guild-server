@@ -104,6 +104,10 @@
 const R    = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
 const PICK = a => a[R(0, a.length - 1)];
 
+const GATE_X    = 400;  // 大門中心 X
+const GATE_DOOR = 462;  // 人物站在門口的 Y
+const GATE_OFF  = 496;  // 畫面外（進出動畫用）
+
 // ── 顏色調色盤（依 username hash 決定） ──────────────────────
 const PALETTES = [
   { bc: 0xe74c3c, hc: 0xf1948a }, { bc: 0x2980b9, hc: 0x7fb3d3 },
@@ -121,9 +125,7 @@ function hashPalette(name) {
 class Guild extends Phaser.Scene {
   constructor() {
     super('G');
-    this.roster   = new Map(); // username → container
-    this.evQueue  = [];
-    this.qRunning = false;
+    this.roster = new Map(); // username → container
   }
 
   create() {
@@ -158,41 +160,101 @@ class Guild extends Phaser.Scene {
     });
   }
 
-  pushServerEvent({ actor, action }) {
+  pushServerEvent({ actor, anonymous, action }) {
     if (!action) return;
-    this.evQueue.push({ username: actor, action });
-    if (!this.qRunning) this._runQueue();
-  }
-
-  // ── 事件佇列 ────────────────────────────────────────────────
-  _runQueue() {
-    if (this.evQueue.length === 0) { this.qRunning = false; return; }
-    this.qRunning = true;
-
-    const { username, action } = this.evQueue.shift();
-
-    // 若該成員還沒有角色，先建立
-    if (!this.roster.has(username)) this.addMember(username);
-    const c = this.roster.get(username);
-    if (!c || c.busy) {
-      this.time.delayedCall(200, () => this._runQueue());
+    if (anonymous) {
+      // 非公會成員對成員的 repo 操作 → 匿名訪客
+      const target = this.roster.get(action.targetActor);
+      if (target) this._spawnAnonymous(actor, action);
       return;
     }
+    if (!this.roster.has(actor)) this.addMember(actor);
+    const c = this.roster.get(actor);
+    if (!c) return;
+    c.evQueue.push(action);
+    if (!c.qRunning) this._runCharQueue(c);
+  }
 
-    c.busy = true;
+  // ── 每人事件佇列 ─────────────────────────────────────────────
+  _runCharQueue(c) {
+    if (!c.evQueue.length) { c.qRunning = false; this.idle(c); return; }
+    c.qRunning = true;
+    // 等角色完全入場（淡入未完成時稍後重試）
+    if (c.alpha < 1) { this.time.delayedCall(200, () => this._runCharQueue(c)); return; }
+
+    const action = c.evQueue.shift();
     c.timer?.destroy();
     this.tweens.killTweensOf(c);
 
-    // action.tx / action.ty 是 server 算好的數字
-    this.go(c, action.tx, action.ty, () => {
+    const next = () => this.time.delayedCall(400, () => this._runCharQueue(c));
+
+    if (!action.targetActor) {
+      // 1-A 自身事件：原地 popup
       this.popup(c, action.icon + ' ' + action.msg, action.col, () => {
-        addLog(action, username);
-        c.busy = false;
-        this.time.delayedCall(400, () => {
-          this.idle(c);
-          this._runQueue();
+        addLog(action, c.username); next();
+      });
+
+    } else if (this.roster.has(action.targetActor)) {
+      // 目標在公會：走向對方
+      const target = this.roster.get(action.targetActor);
+      const tx = target.x + R(-30, 30), ty = target.y + R(-20, 20);
+      this.go(c, tx, ty, () => {
+        this.popup(c, action.icon + ' ' + action.msg, action.col, () => {
+          addLog(action, c.username); next();
         });
       });
+
+    } else {
+      // 2-B 外部事件：走到大門 → popup → 離開 → 過一段時間回來
+      this.go(c, GATE_X, GATE_DOOR, () => {
+        this.popup(c, action.icon + ' ' + action.msg, action.col, () => {
+          addLog(action, c.username);
+          this.tweens.add({
+            targets: c, y: GATE_OFF, alpha: 0, duration: 500,
+            onComplete: () => this.time.delayedCall(R(2000, 4000), () => {
+              c.setPosition(GATE_X, GATE_OFF).setAlpha(0);
+              this.tweens.add({
+                targets: c, alpha: 1, duration: 300,
+                onComplete: () => this.go(c, R(120, 680), R(310, 435), () => {
+                  this.time.delayedCall(300, () => this._runCharQueue(c));
+                }),
+              });
+            }),
+          });
+        });
+      });
+    }
+  }
+
+  // ── 匿名訪客（非公會成員） ────────────────────────────────────
+  _spawnAnonymous(actorName, action) {
+    const target = this.roster.get(action.targetActor);
+    if (!target) return;
+    const c = this.add.container(GATE_X, GATE_OFF).setDepth(5).setAlpha(0);
+    const g = this.add.graphics();
+    g.fillStyle(0x555555, 0.65); g.fillRect(-7, 9, 6, 14); g.fillRect(1, 9, 6, 14);
+    g.fillStyle(0x444444, 1);    g.fillRoundedRect(-11, -12, 22, 22, 3);
+    g.fillStyle(0x666666, 1);    g.fillCircle(0, -22, 13);
+    g.fillStyle(0x888888);       g.fillCircle(-4, -23, 2.5); g.fillCircle(4, -23, 2.5);
+    g.fillStyle(0xcccccc);       g.fillCircle(-3, -24, 1);   g.fillCircle(5, -24, 1);
+    const lbl = this.add.text(0, 14, '???', {
+      fontSize: '9px', fontFamily: 'monospace', color: '#aaa', stroke: '#000', strokeThickness: 3,
+    }).setOrigin(0.5, 0);
+    c.add([g, lbl]); c.gfx = g;
+    const tx = target.x + R(-30, 30), ty = target.y + R(-20, 20);
+    this.tweens.add({
+      targets: c, alpha: 1, duration: 300,
+      onComplete: () => this.go(c, tx, ty, () => {
+        this.popup(c, action.icon + ' ' + action.msg, action.col, () => {
+          addLog(action, actorName);
+          this.go(c, GATE_X, GATE_DOOR, () => {
+            this.tweens.add({
+              targets: c, y: GATE_OFF, alpha: 0, duration: 400,
+              onComplete: () => c.destroy(),
+            });
+          });
+        });
+      }),
     });
   }
 
@@ -239,6 +301,24 @@ class Guild extends Phaser.Scene {
     this.add.text(400, 26, '── G U I L D   H A L L ──', {
       fontSize:'14px', fontFamily:'Georgia, serif', color:'#f5d076', stroke:'#3d2007', strokeThickness:3,
     }).setOrigin(0.5);
+
+    // ── 大門（底部中央） ─────────────────────────────────────────
+    // 門洞暗色背景（低 depth，人物走到這裡會被門框遮住）
+    g.fillStyle(0x060200); g.fillRect(362, 447, 76, 33);
+    // 門框（高 depth = 在人物前方，製造穿越感）
+    const gf = this.add.graphics().setDepth(12);
+    gf.fillStyle(0x4a2810); gf.fillRect(350, 432, 12, 48); // 左柱
+    gf.fillRect(438, 432, 12, 48);                          // 右柱
+    gf.fillStyle(0x5a3118); gf.fillRect(346, 424, 108, 10); // 過梁
+    gf.fillStyle(0x3d2007, 0.8); gf.fillRect(346, 433, 108, 3); // 梁底陰影
+    gf.lineStyle(1, 0x8b6914, 0.9);
+    gf.strokeRect(350, 424, 100, 56);                        // 金邊框
+    gf.fillStyle(0x8b6914);
+    gf.fillCircle(388, 455, 3); gf.fillCircle(412, 455, 3); // 門把
+    this.add.text(GATE_X, 421, '大門', {
+      fontSize: '10px', fontFamily: 'serif', color: '#f5d076',
+      stroke: '#3d2007', strokeThickness: 3,
+    }).setOrigin(0.5, 1).setDepth(13);
   }
 
   flicker() {
@@ -252,9 +332,8 @@ class Guild extends Phaser.Scene {
   // ── 角色 ────────────────────────────────────────────────────
   _spawnChar(username) {
     const pal = hashPalette(username);
-    // 隨機出生在地板區域
-    const x = R(80, 720), y = R(310, 440);
-    const c = this.add.container(x, y).setDepth(5);
+    // 從大門位置（畫面外）走進來
+    const c = this.add.container(GATE_X, GATE_OFF).setDepth(5).setAlpha(0);
     const g = this.add.graphics();
     g.fillStyle(pal.bc, 0.65); g.fillRect(-7, 9, 6, 14); g.fillRect(1, 9, 6, 14);
     g.fillStyle(pal.bc, 1);    g.fillRoundedRect(-11, -12, 22, 22, 3);
@@ -267,26 +346,26 @@ class Guild extends Phaser.Scene {
       color: '#fff', stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5, 0);
     c.add([g, lbl]);
-    c.gfx = g; c.busy = false; c.timer = null;
-    c.setAlpha(0);
-    this.tweens.add({
-      targets: c, alpha: 1, duration: 500,
-      onComplete: () => this.idle(c),
-    });
+    c.gfx = g; c.username = username; c.evQueue = []; c.qRunning = false; c.timer = null;
     this.roster.set(username, c);
+    // 淡入後走到隨機閒置位置
+    this.tweens.add({
+      targets: c, alpha: 1, duration: 300,
+      onComplete: () => this.go(c, R(120, 680), R(310, 435), () => this.idle(c)),
+    });
     return c;
   }
 
   // ── 走動 ─────────────────────────────────────────────────────
   idle(c) {
-    if (c.busy) return;
+    if (c.qRunning) return;
     c.timer?.destroy(); this.tweens.killTweensOf(c);
-    const tx = R(75, 720), ty = R(305, 445);
+    const tx = R(75, 720), ty = R(300, 435); // 不閒逛到大門區域
     const dist = Phaser.Math.Distance.Between(c.x, c.y, tx, ty);
     this.tweens.add({
       targets: c, x: tx, y: ty, duration: dist * 5.5, ease: 'Linear',
       onUpdate:   () => { c.gfx.y = Math.sin(this.time.now * .013) * 2.5; c.setDepth(4 + c.y / 100); },
-      onComplete: () => { c.gfx.y = 0; if (!c.busy) c.timer = this.time.delayedCall(R(600, 2200), () => this.idle(c)); },
+      onComplete: () => { c.gfx.y = 0; if (!c.qRunning) c.timer = this.time.delayedCall(R(600, 2200), () => this.idle(c)); },
     });
   }
 
