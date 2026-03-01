@@ -12,25 +12,23 @@ const PORT         = process.env.PORT         || 3000;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'changeme';
 const APP_SLUG     = process.env.GITHUB_APP_SLUG || '';
 const MEMBERS_FILE = process.env.MEMBERS_FILE || path.join(__dirname, 'members.json');
+const MEMBER_LIMIT = 300;
 
 // ── 成員名單（記憶體 + JSON 持久化） ─────────────────────────
-// 結構：{ approved: Set<string>, pending: Set<string> }
-let members = { approved: new Set(), pending: new Set() };
+let members = { approved: new Set() };
 
 function loadMembers() {
   try {
     const data = JSON.parse(fs.readFileSync(MEMBERS_FILE, 'utf8'));
     members.approved = new Set(data.approved || []);
-    members.pending  = new Set(data.pending  || []);
   } catch {
-    members = { approved: new Set(), pending: new Set() };
+    members = { approved: new Set() };
   }
 }
 
 function saveMembers() {
   fs.writeFileSync(MEMBERS_FILE, JSON.stringify({
     approved: [...members.approved],
-    pending:  [...members.pending],
   }, null, 2));
 }
 
@@ -94,28 +92,16 @@ function isValidUsername(u) {
 
 // ── Admin API ─────────────────────────────────────────────────
 app.get('/api/members', adminOnly, (req, res) => {
-  res.json({
-    approved: [...members.approved],
-    pending:  [...members.pending],
-  });
+  res.json({ approved: [...members.approved] });
 });
 
-// Admin 直接新增核准成員
+// Admin 直接新增成員（邊緣情況用，例如 webhook 失敗時）
 app.post('/api/members', adminOnly, (req, res) => {
   const { username } = req.body;
   if (!isValidUsername(username))
     return res.status(400).json({ error: 'Invalid username' });
-  members.pending.delete(username);
-  members.approved.add(username);
-  saveMembers();
-  broadcast({ type: 'member_join', username });
-  res.json({ ok: true });
-});
-
-// 核准待審成員
-app.post('/api/members/:username/approve', adminOnly, (req, res) => {
-  const { username } = req.params;
-  members.pending.delete(username);
+  if (members.approved.size >= MEMBER_LIMIT)
+    return res.status(400).json({ error: '已達人數上限' });
   members.approved.add(username);
   saveMembers();
   broadcast({ type: 'member_join', username });
@@ -125,7 +111,6 @@ app.post('/api/members/:username/approve', adminOnly, (req, res) => {
 // 移除成員
 app.delete('/api/members/:username', adminOnly, (req, res) => {
   members.approved.delete(req.params.username);
-  members.pending.delete(req.params.username);
   saveMembers();
   broadcast({ type: 'member_leave', username: req.params.username });
   res.json({ ok: true });
@@ -140,24 +125,13 @@ app.post('/api/test', adminOnly, (req, res) => {
 });
 
 // ── Public API ────────────────────────────────────────────────
-// 提供 App Slug 給前端產生安裝連結
 app.get('/api/config', (req, res) => {
   res.json({ appSlug: APP_SLUG });
 });
 
-// 任何人都可以送出申請
-app.post('/api/join', (req, res) => {
-  const { username } = req.body;
-  if (!isValidUsername(username))
-    return res.status(400).json({ error: 'Invalid username' });
-  if (members.approved.has(username))
-    return res.json({ ok: true, status: 'already_approved' });
-  if (members.pending.has(username))
-    return res.json({ ok: true, status: 'pending' });
-  members.pending.add(username);
-  saveMembers();
-  console.log(`[join] New request: ${username}`);
-  res.json({ ok: true, status: 'pending', message: '申請已送出，等待管理員審核' });
+app.get('/api/capacity', (req, res) => {
+  const count = members.approved.size;
+  res.json({ count, limit: MEMBER_LIMIT, isFull: count >= MEMBER_LIMIT });
 });
 
 // ── GitHub App Webhook ────────────────────────────────────────
@@ -175,14 +149,25 @@ app.post('/webhook/github', (req, res) => {
   let payload;
   try { payload = JSON.parse(req.body); } catch { return; }
 
-  // App 安裝 / 移除
+  // App 安裝 / 移除 → 自動加入 / 退出公會
   if (eventType === 'installation') {
     const username = payload.sender?.login;
+    if (!username) return;
     if (payload.action === 'created') {
-      console.log(`[webhook] App installed by ${username}`);
-      broadcast({ type: 'member_app_installed', username });
+      if (members.approved.has(username)) return; // 已是成員，忽略
+      if (members.approved.size >= MEMBER_LIMIT) {
+        console.log(`[webhook] App installed by ${username}, but guild is full`);
+        return;
+      }
+      members.approved.add(username);
+      saveMembers();
+      console.log(`[webhook] ${username} joined via GitHub App install`);
+      broadcast({ type: 'member_join', username });
     } else if (payload.action === 'deleted') {
-      console.log(`[webhook] App uninstalled by ${username}`);
+      members.approved.delete(username);
+      saveMembers();
+      console.log(`[webhook] ${username} left via GitHub App uninstall`);
+      broadcast({ type: 'member_leave', username });
     }
     return;
   }
