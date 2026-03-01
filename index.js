@@ -92,6 +92,14 @@ app.delete('/api/members/:username', adminOnly, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── 開發測試端點 ───────────────────────────────────────────────
+app.post('/api/test', adminOnly, (req, res) => {
+  const { actor, anonymous, action } = req.body;
+  if (!actor || !action) return res.status(400).json({ error: 'Missing actor or action' });
+  broadcast({ type: 'event', actor, anonymous: !!anonymous, action });
+  res.json({ ok: true });
+});
+
 // ── Public API ────────────────────────────────────────────────
 // 提供 App Slug 給前端產生安裝連結
 app.get('/api/config', (req, res) => {
