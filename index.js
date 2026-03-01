@@ -4,6 +4,8 @@ const { WebSocketServer }  = require('ws');
 const { createServer }     = require('http');
 const path                 = require('path');
 const fs                   = require('fs');
+const crypto               = require('crypto');
+const cookieParser         = require('cookie-parser');
 const { verifyWebhook, mapWebhookEvent } = require('./github');
 
 const PORT         = process.env.PORT         || 3000;
@@ -43,14 +45,48 @@ app.use(cors({ origin: FRONTEND_ORIGIN }));
 // Webhook route 需要 raw body 才能驗簽
 app.use('/webhook/github', express.raw({ type: 'application/json' }));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(cookieParser());
+
+// ── Session 管理 ──────────────────────────────────────────────
+const sessions = new Map();  // token → expiresAt
+const SESSION_TTL = 8 * 60 * 60 * 1000;  // 8 小時
 
 // ── Admin 驗證 ────────────────────────────────────────────────
 function adminOnly(req, res, next) {
-  const secret = req.headers['x-admin-secret'] || req.query.secret;
-  if (secret !== ADMIN_SECRET) return res.status(403).json({ error: 'Forbidden' });
-  next();
+  // 優先檢查 session cookie
+  const token = req.cookies?.session;
+  if (token && sessions.has(token)) {
+    const exp = sessions.get(token);
+    if (Date.now() < exp) return next();
+    sessions.delete(token);
+  }
+  // fallback：x-admin-secret header（供 curl / 工具使用）
+  const secret = req.headers['x-admin-secret'];
+  if (secret === ADMIN_SECRET) return next();
+  return res.status(403).json({ error: 'Forbidden' });
 }
+
+// POST /api/admin/login
+app.post('/api/admin/login', (req, res) => {
+  const { password } = req.body;
+  if (password !== ADMIN_SECRET) return res.status(403).json({ error: 'Forbidden' });
+  const token = crypto.randomBytes(32).toString('hex');
+  sessions.set(token, Date.now() + SESSION_TTL);
+  res.cookie('session', token, {
+    httpOnly: true,
+    sameSite: 'strict',
+    maxAge: SESSION_TTL,
+  });
+  res.json({ ok: true });
+});
+
+// POST /api/admin/logout
+app.post('/api/admin/logout', (req, res) => {
+  const token = req.cookies?.session;
+  if (token) sessions.delete(token);
+  res.clearCookie('session');
+  res.json({ ok: true });
+});
 
 function isValidUsername(u) {
   return typeof u === 'string' && /^[a-zA-Z0-9-]{1,39}$/.test(u);
@@ -193,8 +229,8 @@ function broadcast(msg) {
 
 // ── Start ─────────────────────────────────────────────────────
 server.listen(PORT, () => {
-  console.log(`\n🏰  Guild Hall  →  http://localhost:${PORT}`);
-  console.log(`🔑  Admin       →  http://localhost:${PORT}/admin.html?secret=${ADMIN_SECRET}`);
+  console.log(`\n🏰  Guild Hall  →  http://localhost:5173`);
+  console.log(`🔑  Admin       →  http://localhost:5173/admin`);
   console.log(`🔗  Webhook URL →  http://your-domain:${PORT}/webhook/github\n`);
   if (!APP_SLUG) console.warn('⚠️  GITHUB_APP_SLUG 未設定，成員無法看到安裝 App 的連結');
 });
